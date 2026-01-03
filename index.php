@@ -1,4 +1,7 @@
 <?php
+// PERBAIKAN: Set timezone di awal file
+date_default_timezone_set('Asia/Jakarta');
+
 // Start session untuk notifikasi
 session_start();
 
@@ -20,6 +23,9 @@ try {
             PDO::ATTR_EMULATE_PREPARES => false
         ]
     );
+    
+    // PERBAIKAN: Set timezone untuk MySQL connection
+    $pdo->exec("SET time_zone = '+07:00'");
 } catch (PDOException $e) {
     die("Koneksi database gagal: " . $e->getMessage() . "<br>Pastikan database 'ojol_finance' sudah dibuat!");
 }
@@ -30,10 +36,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         switch ($_POST['action']) {
             case 'add':
                 if (!empty($_POST['amount']) && $_POST['amount'] > 0) {
-                    // Validasi tanggal tidak boleh future date
+                    // PERBAIKAN: Validasi tanggal dengan DateTime
                     $inputDate = $_POST['date'];
-                    if ($inputDate > date('Y-m-d')) {
-                        $_SESSION['error'] = "Tanggal tidak boleh lebih dari hari ini!";
+                    $today = date('Y-m-d');
+                    
+                    // Gunakan strtotime untuk perbandingan yang lebih akurat
+                    if (strtotime($inputDate) > strtotime($today)) {
+                        $_SESSION['error'] = "Tanggal tidak boleh lebih dari hari ini! (Hari ini: " . date('d/m/Y') . ")";
                         break;
                     }
                     
@@ -60,10 +69,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             case 'add_expense':
                 if (!empty($_POST['amount']) && $_POST['amount'] > 0) {
-                    // Validasi tanggal
+                    // PERBAIKAN: Validasi tanggal
                     $inputDate = $_POST['date'];
-                    if ($inputDate > date('Y-m-d')) {
-                        $_SESSION['error'] = "Tanggal tidak boleh lebih dari hari ini!";
+                    $today = date('Y-m-d');
+                    
+                    if (strtotime($inputDate) > strtotime($today)) {
+                        $_SESSION['error'] = "Tanggal tidak boleh lebih dari hari ini! (Hari ini: " . date('d/m/Y') . ")";
                         break;
                     }
                     
@@ -248,7 +259,7 @@ foreach ($targetsData as $target) {
     $targets[$target['target_type']] = $target;
 }
 
-// Calculate totals - HANYA UNTUK HARI INI
+// PERBAIKAN: Calculate totals - HANYA UNTUK HARI INI dengan timezone yang benar
 $today = date('Y-m-d');
 
 // Hitung pendapatan hari ini saja
@@ -339,6 +350,14 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
 </head>
 <body class="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4 sm:p-6 lg:p-8">
     <div class="max-w-7xl mx-auto">
+        
+        <!-- PERBAIKAN: Tambahkan debug info (hapus setelah masalah selesai) 
+        <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs">
+            <strong>Debug Info:</strong> 
+            Timezone PHP: <?= date_default_timezone_get() ?> | 
+            Tanggal Sekarang: <?= date('Y-m-d H:i:s') ?> | 
+            Tanggal Server: <?= date('d/m/Y H:i:s') ?>
+        </div>-->
         
         <!-- Notifications -->
         <?php if (isset($_SESSION['error'])): ?>
