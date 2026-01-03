@@ -243,7 +243,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
         }
     }
-    header('Location: ' . $_SERVER['PHP_SELF'] . ($_GET['filter'] ? '?filter=' . $_GET['filter'] : ''));
+    header(
+        'Location: ' . $_SERVER['PHP_SELF'] .
+        (isset($_GET['filter']) ? '?filter=' . urlencode($_GET['filter']) : '')
+    );
     exit;
 }
 
