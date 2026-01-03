@@ -1,9 +1,16 @@
 <?php
-// PERBAIKAN: Set timezone di awal file
+// LOAD ENVIRONMENT VARIABLES FIRST
+require_once 'load_env.php';
+require_once 'telegram_notifier.php';
+
+// Set timezone di awal file
 date_default_timezone_set('Asia/Jakarta');
 
 // Start session untuk notifikasi
 session_start();
+
+// Initialize Telegram Notifier
+$telegram = new TelegramNotifier();
 
 // Konfigurasi Database
 define('DB_HOST', 'localhost');
@@ -24,7 +31,6 @@ try {
         ]
     );
     
-    // PERBAIKAN: Set timezone untuk MySQL connection
     $pdo->exec("SET time_zone = '+07:00'");
 } catch (PDOException $e) {
     die("Koneksi database gagal: " . $e->getMessage() . "<br>Pastikan database 'ojol_finance' sudah dibuat!");
@@ -36,17 +42,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         switch ($_POST['action']) {
             case 'add':
                 if (!empty($_POST['amount']) && $_POST['amount'] > 0) {
-                    // PERBAIKAN: Validasi tanggal dengan DateTime
                     $inputDate = $_POST['date'];
                     $today = date('Y-m-d');
                     
-                    // Gunakan strtotime untuk perbandingan yang lebih akurat
                     if (strtotime($inputDate) > strtotime($today)) {
                         $_SESSION['error'] = "Tanggal tidak boleh lebih dari hari ini! (Hari ini: " . date('d/m/Y') . ")";
                         break;
                     }
                     
-                    // Validasi jam (end_time harus > start_time)
                     if (!empty($_POST['start_time']) && !empty($_POST['end_time'])) {
                         if ($_POST['end_time'] <= $_POST['start_time']) {
                             $_SESSION['error'] = "Jam selesai harus setelah jam mulai!";
@@ -63,13 +66,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_POST['start_time'] ?? null,
                         $_POST['end_time'] ?? null
                     ]);
+                    
                     $_SESSION['success'] = "Pendapatan berhasil ditambahkan!";
+                    
+                    // SEND TELEGRAM NOTIFICATION
+                    $telegram->notifyIncome([
+                        'date' => $_POST['date'],
+                        'amount' => floatval($_POST['amount']),
+                        'note' => !empty($_POST['note']) ? $_POST['note'] : '-',
+                        'platform' => $_POST['platform'] ?? 'Lainnya',
+                        'start_time' => $_POST['start_time'] ?? null,
+                        'end_time' => $_POST['end_time'] ?? null
+                    ]);
                 }
                 break;
             
             case 'add_expense':
                 if (!empty($_POST['amount']) && $_POST['amount'] > 0) {
-                    // PERBAIKAN: Validasi tanggal
                     $inputDate = $_POST['date'];
                     $today = date('Y-m-d');
                     
@@ -85,7 +98,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_POST['category'] ?? 'Lainnya',
                         !empty($_POST['description']) ? $_POST['description'] : '-'
                     ]);
+                    
                     $_SESSION['success'] = "Pengeluaran berhasil ditambahkan!";
+                    
+                    // SEND TELEGRAM NOTIFICATION
+                    $telegram->notifyExpense([
+                        'date' => $_POST['date'],
+                        'amount' => floatval($_POST['amount']),
+                        'category' => $_POST['category'] ?? 'Lainnya',
+                        'description' => !empty($_POST['description']) ? $_POST['description'] : '-'
+                    ]);
                 }
                 break;
             
@@ -98,7 +120,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $_POST['due_date'],
                         $_POST['category'] ?? 'Lainnya'
                     ]);
+                    
                     $_SESSION['success'] = "Tagihan berhasil ditambahkan!";
+                    
+                    // SEND TELEGRAM NOTIFICATION
+                    $telegram->notifyBill([
+                        'name' => $_POST['name'],
+                        'amount' => floatval($_POST['amount']),
+                        'due_date' => $_POST['due_date'],
+                        'category' => $_POST['category'] ?? 'Lainnya'
+                    ]);
                 }
                 break;
             
@@ -144,23 +175,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             
             case 'clear_all':
-                // Hapus SEMUA data termasuk pendapatan, pengeluaran, tagihan, target
                 $pdo->exec("TRUNCATE TABLE entries");
                 $pdo->exec("TRUNCATE TABLE expenses");
                 $pdo->exec("TRUNCATE TABLE bills"); 
                 $pdo->exec("TRUNCATE TABLE targets");
-                
                 $_SESSION['success'] = "Semua data berhasil dihapus!";
                 break;
             
             case 'clear_entries_only':
-                // Hanya hapus data pendapatan
                 $pdo->exec("TRUNCATE TABLE entries");
                 $_SESSION['success'] = "Data pendapatan berhasil dihapus!";
                 break;
             
             case 'clear_expenses_only':
-                // Hanya hapus data pengeluaran  
                 $pdo->exec("TRUNCATE TABLE expenses");
                 $_SESSION['success'] = "Data pengeluaran berhasil dihapus!";
                 break;
@@ -259,23 +286,19 @@ foreach ($targetsData as $target) {
     $targets[$target['target_type']] = $target;
 }
 
-// PERBAIKAN: Calculate totals - HANYA UNTUK HARI INI dengan timezone yang benar
+// Calculate totals - HARI INI
 $today = date('Y-m-d');
 
-// Hitung pendapatan hari ini saja
 $todayStmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) as today_total FROM entries WHERE date = ?");
 $todayStmt->execute([$today]);
 $todayIncome = $todayStmt->fetch()['today_total'];
 
-// Hitung pengeluaran hari ini saja  
 $todayExpenseStmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) as today_expenses FROM expenses WHERE date = ?");
 $todayExpenseStmt->execute([$today]);
 $todayExpenses = $todayExpenseStmt->fetch()['today_expenses'];
 
-// Net income hari ini
 $netIncomeToday = $todayIncome - $todayExpenses;
 
-// Hitung pembagian 60-30-10 berdasarkan hari ini saja
 $needs = round(($percNeeds / 100) * $netIncomeToday);
 $save = round(($percSave / 100) * $netIncomeToday);
 $emergency = $netIncomeToday - $needs - $save;
@@ -320,17 +343,15 @@ $efficiencyStmt = $pdo->prepare("
 $efficiencyStmt->execute([$today]);
 $efficiency = $efficiencyStmt->fetch();
 
-// Jika tidak ada data jam kerja hari ini, tampilkan pesan
 $hasWorkTimeData = $efficiency['total_entries_with_time'] > 0;
 
-// Calculate target progress untuk HARI INI
+// Calculate target progress
 $dailyTarget = $targets['harian']['amount'] ?? 0;
 $weeklyTarget = $targets['mingguan']['amount'] ?? 0;
 $monthlyTarget = $targets['bulanan']['amount'] ?? 0;
 
 $todayProgress = $dailyTarget > 0 ? min(100, ($todayIncome / $dailyTarget) * 100) : 0;
 
-// Hitung total mingguan untuk progress (opsional)
 $weeklyStmt = $pdo->query("
     SELECT COALESCE(SUM(amount), 0) as weekly_total 
     FROM entries 
@@ -338,6 +359,16 @@ $weeklyStmt = $pdo->query("
 ");
 $weeklyTotal = $weeklyStmt->fetch()['weekly_total'];
 $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 100) : 0;
+
+// CHECK TARGET ACHIEVEMENT & SEND NOTIFICATION
+if ($todayProgress >= 100 && $dailyTarget > 0) {
+    // Check if already notified today
+    $notifiedKey = 'target_notified_' . $today;
+    if (!isset($_SESSION[$notifiedKey])) {
+        $telegram->notifyTargetAchieved('harian', $todayIncome);
+        $_SESSION[$notifiedKey] = true;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -350,14 +381,6 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
 </head>
 <body class="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4 sm:p-6 lg:p-8">
     <div class="max-w-7xl mx-auto">
-        
-        <!-- PERBAIKAN: Tambahkan debug info (hapus setelah masalah selesai) 
-        <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs">
-            <strong>Debug Info:</strong> 
-            Timezone PHP: <?= date_default_timezone_get() ?> | 
-            Tanggal Sekarang: <?= date('Y-m-d H:i:s') ?> | 
-            Tanggal Server: <?= date('d/m/Y H:i:s') ?>
-        </div>-->
         
         <!-- Notifications -->
         <?php if (isset($_SESSION['error'])): ?>
@@ -388,12 +411,36 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
                         Catat penghasilan harianmu dan kelola keuangan dengan mudah
                     </p>
                 </div>
-                <div class="text-right">
-                    <div class="text-xs text-gray-500">Total Semua Waktu</div>
-                    <div class="text-lg font-bold text-blue-600">Rp <?= number_format($stats['total_all_time'] ?? 0, 0, ',', '.') ?></div>
-                    <div class="text-xs text-gray-400"><?= $stats['total_entries'] ?? 0 ?> entri</div>
+                <div class="text-right flex items-center gap-3">
+                    <div>
+                        <div class="text-xs text-gray-500">Total Semua Waktu</div>
+                        <div class="text-lg font-bold text-blue-600">Rp <?= number_format($stats['total_all_time'] ?? 0, 0, ',', '.') ?></div>
+                        <div class="text-xs text-gray-400"><?= $stats['total_entries'] ?? 0 ?> entri</div>
+                    </div>
+                    
+                    <!-- Telegram Settings Link -->
+                    <a href="telegram_settings.php" class="p-3 bg-blue-100 hover:bg-blue-200 rounded-lg transition" title="Pengaturan Telegram">
+                        <span class="text-2xl">📱</span>
+                        <?php if ($telegram->isConfigured()): ?>
+                            <div class="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full"></div>
+                        <?php endif; ?>
+                    </a>
                 </div>
             </div>
+            
+            <!-- Telegram Status Badge -->
+            <?php if ($telegram->isConfigured()): ?>
+                <div class="mt-3 inline-flex items-center gap-2 px-3 py-1 bg-green-100 text-green-700 text-xs rounded-full">
+                    <span>✅</span>
+                    <span>Notifikasi Telegram Aktif</span>
+                </div>
+            <?php else: ?>
+                <div class="mt-3 inline-flex items-center gap-2 px-3 py-1 bg-yellow-100 text-yellow-700 text-xs rounded-full">
+                    <span>⚠️</span>
+                    <span>Notifikasi Telegram Belum Aktif</span>
+                    <a href="telegram_settings.php" class="underline">Setup</a>
+                </div>
+            <?php endif; ?>
         </div>
 
         <!-- Target & Efficiency Section -->
@@ -1315,26 +1362,21 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
     <script>
         // Tab functionality
         function showTab(tabName) {
-            // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.add('hidden');
             });
             
-            // Remove active class from all buttons
             document.querySelectorAll('.tab-button').forEach(button => {
                 button.classList.remove('border-blue-500', 'text-blue-600');
                 button.classList.add('border-transparent', 'text-gray-500');
             });
             
-            // Show selected tab
             document.getElementById(tabName + '-tab').classList.remove('hidden');
             
-            // Add active class to clicked button
             event.target.classList.remove('border-transparent', 'text-gray-500');
             event.target.classList.add('border-blue-500', 'text-blue-600');
         }
 
-        // Bill form functionality
         function showAddBillForm() {
             document.getElementById('add-bill-form').classList.remove('hidden');
         }
@@ -1343,7 +1385,6 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
             document.getElementById('add-bill-form').classList.add('hidden');
         }
 
-        // Copy to clipboard
         function copyToClipboard(text) {
             navigator.clipboard.writeText(text).then(function() {
                 alert('Data berhasil disalin ke clipboard!');
@@ -1352,7 +1393,6 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
             });
         }
 
-        // Percentage validation
         function validatePercentage() {
             const needs = parseInt(document.getElementById('perc_needs').value) || 0;
             const save = parseInt(document.getElementById('perc_save').value) || 0;
@@ -1367,20 +1407,9 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
                 return false;
             }
             
-            if (needs < 0 || save < 0 || emergency < 0) {
-                alert('❌ Persentase tidak boleh negatif!');
-                return false;
-            }
-            
-            if (needs > 100 || save > 100 || emergency > 100) {
-                alert('❌ Persentase tidak boleh lebih dari 100%!');
-                return false;
-            }
-            
             return true;
         }
 
-        // Real-time validation
         function updatePercentageTotal() {
             const needs = parseInt(document.getElementById('perc_needs').value) || 0;
             const save = parseInt(document.getElementById('perc_save').value) || 0;
@@ -1394,7 +1423,6 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
             }
         }
 
-        // Auto-calculate remaining percentage
         function autoCalculatePercentage(field) {
             const needs = parseInt(document.getElementById('perc_needs').value) || 0;
             const save = parseInt(document.getElementById('perc_save').value) || 0;
@@ -1412,7 +1440,6 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
             updatePercentageTotal();
         }
 
-        // Copy today's summary to clipboard
         function copyTodaySummary() {
             const today = new Date().toLocaleDateString('id-ID', { 
                 weekday: 'long', 
@@ -1446,7 +1473,6 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
 
         // Charts
         document.addEventListener('DOMContentLoaded', function() {
-            // Platform Chart
             const platformCtx = document.getElementById('platformChart').getContext('2d');
             const platformChart = new Chart(platformCtx, {
                 type: 'pie',
@@ -1472,7 +1498,6 @@ $weeklyProgress = $weeklyTarget > 0 ? min(100, ($weeklyTotal / $weeklyTarget) * 
                 }
             });
 
-            // Income Chart
             const incomeCtx = document.getElementById('incomeChart').getContext('2d');
             const incomeChart = new Chart(incomeCtx, {
                 type: 'line',
